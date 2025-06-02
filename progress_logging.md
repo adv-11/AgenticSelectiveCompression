@@ -84,3 +84,11 @@ Graph Starts -> User Message -> Ingest Agent (persist to memory) -> Retrieval Ag
 
 Split the repository into a standalone repository:
 [text](https://github.com/adv-11/AgenticSelectiveCompression)
+
+# Date 23rd June
+
+Implement multi agent workflow
+
+# Date July 2nd
+
+Add a global accessor so everyone uses the same manager instance.
