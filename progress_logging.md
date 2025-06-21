@@ -79,3 +79,8 @@ The flow will look like:
 <br>
 
 Graph Starts -> User Message -> Ingest Agent (persist to memory) -> Retrieval Agent( see ingest and pull from all tiers) -> Orchestrator Agent (see retrieved , prompt, call LLM) -> Cleanup agent ( runs in bg)
+
+# Date 21st June
+
+Split the repository into a standalone repository:
+[text](https://github.com/adv-11/AgenticSelectiveCompression)
