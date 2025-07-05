@@ -1,87 +1,145 @@
+"""
+Simple Chat Agent - Standalone implementation without LangGraph
+"""
+
 import os
 import logging
+import time
+from typing import Dict, List
+from openai import OpenAI
+from memory.memory_tier_manager import get_memory_manager
 
-from langgraph import Graph, Agent, Message
-import openai
-
-from memory.memory_tier_manager import MemoryTierManager
-
-# ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s"
 )
 logger = logging.getLogger(__name__)
 
-# ─── OpenAI Setup ─────────────────────────────────────────────────────────────
-openai.api_key = os.getenv("OPENAI_API_KEY")
-if not openai.api_key:
-    raise EnvironmentError("Please set the OPENAI_API_KEY environment variable.")
-
-# ─── ChatAgent ────────────────────────────────────────────────────────────────
-class ChatAgent(Agent):
+class SimpleChatAgent:
     """
-    A LangGraph agent that:
-      1. Stores each incoming user turn in the memory tiers.
-      2. (Later) could retrieve relevant context.
-      3. Forwards the message + context to gpt4o-mini and emits the response.
+    A simple chat agent that:
+    1. Stores user messages in memory tiers
+    2. Retrieves relevant context from all tiers
+    3. Generates responses using OpenAI
     """
 
-    def __init__(self, name: str = "chat_agent"):
-        super().__init__(name=name)
-        # Initialize the MemoryTierManager (uses memory.db by default)
-        db_path = os.getenv("MEMORY_DB_PATH", "memory.db")
-        self.memory = MemoryTierManager(db_path=db_path)
-        logger.info(f"Initialized ChatAgent with memory DB at {db_path}")
+    def __init__(self, name: str = "simple_chat_agent"):
+        self.name = name
+        
+        # Initialize OpenAI client
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise EnvironmentError("Please set the OPENAI_API_KEY environment variable.")
+        self.client = OpenAI(api_key=api_key)
+        
+        # Initialize memory manager
+        self.memory = get_memory_manager()
+        
+        logger.info(f"Initialized {self.name}")
 
-    @Agent.on_event("message")
-    def handle_message(self, msg: Message):
-        user_text = msg.content.strip()
-        logger.info(f"[{self.name}] Received user message: {user_text!r}")
-
-        # ── 1. STORE the user turn in memory ──────────────────────────────
+    def process_message(self, user_message: str) -> str:
+        """
+        Process a user message and return AI response
+        """
+        logger.info(f"Processing message: {user_message}")
+        
+        # Store user message in memory
         try:
-            tier = self.memory.add(user_text)
-            logger.info(f"[{self.name}] Stored message in '{tier}' tier")
+            tier = self.memory.add(user_message)
+            logger.info(f"Stored message in '{tier}' tier")
         except Exception as e:
-            logger.error(f"[{self.name}] Memory storage error: {e}")
-
-        # ── 2. (Future) RETRIEVE context from memory here ─────────────────
-        # e.g. context = self.memory.get_relevant(user_text)
-
-        # ── 3. CALL the LLM ───────────────────────────────────────────────
+            logger.error(f"Failed to store message: {e}")
+        
+        # Retrieve context from all tiers
+        hot_context = self.memory.get_hot(top_k=3)
+        warm_context = self.memory.get_warm(user_message, top_k=2)
+        cold_context = self.memory.get_cold(user_message, top_k=2)
+        
+        # Build context sections
+        context_sections = []
+        
+        if hot_context:
+            hot_section = "Recent conversation:\n" + "\n".join(f"- {item}" for item in hot_context)
+            context_sections.append(hot_section)
+        
+        if warm_context:
+            warm_section = "Relevant summaries:\n" + "\n".join(
+                f"- {item['summary']}" for item in warm_context
+            )
+            context_sections.append(warm_section)
+        
+        if cold_context:
+            cold_section = "Related archived content:\n" + "\n".join(
+                f"- {item['content'][:200]}..." for item in cold_context
+            )
+            context_sections.append(cold_section)
+        
+        # Build system prompt with context
+        system_prompt = "You are a helpful assistant."
+        if context_sections:
+            system_prompt += "\n\nContext from memory:\n" + "\n\n".join(context_sections)
+        
+        # Generate response
         try:
-            response = openai.ChatCompletion.create(
-                model="gpt4o-mini",
+            response = self.client.chat.completions.create(
+                model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": "You are a helpful assistant."},
-                    {"role": "user",   "content": user_text}
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
                 ],
                 temperature=0.7,
                 max_tokens=512
             )
-            assistant_text = response.choices[0].message.content.strip()
-            logger.info(f"[{self.name}] LLM responded: {assistant_text!r}")
+            
+            ai_response = response.choices[0].message.content.strip()
+            logger.info(f"Generated response: {ai_response}")
+            
+            # Store AI response in memory as well
+            self.memory.add(f"Assistant: {ai_response}")
+            
+            return ai_response
+            
         except Exception as e:
-            logger.error(f"[{self.name}] LLM call failed: {e}")
-            assistant_text = "Sorry, I encountered an error while thinking."
+            logger.error(f"Failed to generate response: {e}")
+            return "I'm sorry, I encountered an error while processing your message."
 
-        # ── 4. EMIT the LLM’s reply back into the graph ────────────────────
-        self.emit(
-            Message(content=assistant_text, metadata={"agent": self.name})
-        )
-
+    def chat_loop(self):
+        """
+        Interactive chat loop for testing
+        """
+        print(f"\n{self.name} ready! Type 'quit' to exit.\n")
+        
+        while True:
+            try:
+                user_input = input("You: ").strip()
+                
+                if user_input.lower() in ['quit', 'exit', 'q']:
+                    print("Goodbye!")
+                    break
+                
+                if not user_input:
+                    continue
+                
+                response = self.process_message(user_input)
+                print(f"Assistant: {response}\n")
+                
+            except KeyboardInterrupt:
+                print("\nGoodbye!")
+                break
+            except Exception as e:
+                logger.error(f"Error in chat loop: {e}")
+                print("Sorry, something went wrong. Please try again.")
 
 def main():
     """
-    Entrypoint: build the graph, register the ChatAgent, and start listening.
+    Main entry point for the chat agent
     """
-    graph = Graph()
-    agent = ChatAgent()
-    graph.add_agent(agent)
-    logger.info("Starting LangGraph event loop...")
-    graph.run()  # Blocks here
-
+    try:
+        agent = SimpleChatAgent()
+        agent.chat_loop()
+    except Exception as e:
+        logger.error(f"Failed to start chat agent: {e}")
+        print("Failed to start the chat agent. Please check your configuration.")
 
 if __name__ == "__main__":
     main()
